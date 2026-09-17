@@ -2,6 +2,7 @@ require('dotenv').config();
 
 const fs = require('fs');
 const path = require('path');
+const Module = require('module');
 
 const {
   Client,
@@ -11,9 +12,9 @@ const {
   ActivityType
 } = require('discord.js');
 
-/* =====================================
+/* =====================================================
    환경변수
-===================================== */
+===================================================== */
 
 const TOKEN = process.env.DISCORD_TOKEN;
 
@@ -22,9 +23,67 @@ if (!TOKEN) {
   process.exit(1);
 }
 
-/* =====================================
-   CLIENT
-===================================== */
+/* =====================================================
+   기본 경로
+===================================================== */
+
+const ROOT = __dirname;
+
+/* =====================================================
+   utils 경로 자동 호환
+   -----------------------------------------------------
+   현재 저장소 구조:
+   /logger.js
+   /permissions.js
+   /database.js
+   /adminStore.js
+
+   기존 파일:
+   ../utils/logger
+   ../utils/permissions
+   ../utils/database
+   ../utils/adminStore
+
+   위 두 구조를 모두 사용할 수 있도록 처리합니다.
+===================================================== */
+
+const originalModuleLoad = Module._load;
+
+Module._load = function (request, parent, isMain) {
+  const match = request.match(
+    /^(?:\.\.\/utils|\.\/utils)\/(.+)$/
+  );
+
+  if (match) {
+    const target = match[1];
+
+    const candidates = [
+      path.join(ROOT, target),
+      path.join(ROOT, `${target}.js`),
+      path.join(ROOT, `${target}.json`)
+    ];
+
+    for (const candidate of candidates) {
+      if (fs.existsSync(candidate)) {
+        return originalModuleLoad(
+          candidate,
+          parent,
+          isMain
+        );
+      }
+    }
+  }
+
+  return originalModuleLoad(
+    request,
+    parent,
+    isMain
+  );
+};
+
+/* =====================================================
+   Discord Client
+===================================================== */
 
 const client = new Client({
   intents: [
@@ -38,26 +97,22 @@ const client = new Client({
 
   partials: [
     Partials.Channel,
-    Partials.Message
+    Partials.Message,
+    Partials.User,
+    Partials.GuildMember
   ]
 });
 
-/* =====================================
-   COLLECTION
-===================================== */
+/* =====================================================
+   Collection
+===================================================== */
 
 client.commands = new Collection();
 client.prefixCommands = new Collection();
 
-/* =====================================
-   경로
-===================================== */
-
-const ROOT = __dirname;
-
-/* =====================================
-   Discord 이벤트 파일 목록
-===================================== */
+/* =====================================================
+   Discord 이벤트 목록
+===================================================== */
 
 const DISCORD_EVENTS = new Set([
   'ready',
@@ -65,28 +120,35 @@ const DISCORD_EVENTS = new Set([
   'messageDelete',
   'messageUpdate',
   'interactionCreate',
+
   'guildMemberAdd',
   'guildMemberRemove',
   'guildMemberUpdate',
+
   'voiceStateUpdate',
   'presenceUpdate',
+
   'channelCreate',
   'channelDelete',
   'channelUpdate',
+
   'roleCreate',
   'roleDelete',
   'roleUpdate',
+
   'guildCreate',
   'guildDelete',
+
   'error',
   'warn',
+
   'shardReconnecting',
   'shardResume'
 ]);
 
-/* =====================================
-   루트 JS 파일 가져오기
-===================================== */
+/* =====================================================
+   루트 JS 파일 검색
+===================================================== */
 
 function getRootFiles() {
   return fs
@@ -100,13 +162,15 @@ function getRootFiles() {
     });
 }
 
-/* =====================================
-   모듈 안전 로드
-===================================== */
+/* =====================================================
+   안전한 require
+===================================================== */
 
 function loadModule(file) {
   try {
-    return require(path.join(ROOT, file));
+    return require(
+      path.join(ROOT, file)
+    );
   } catch (error) {
     console.error(
       `⚠️ ${file} 로드 실패: ${error.message}`
@@ -116,11 +180,17 @@ function loadModule(file) {
   }
 }
 
-/* =====================================
-   명령어 로드
-===================================== */
+/* =====================================================
+   모듈 분류
+===================================================== */
 
 const rootFiles = getRootFiles();
+
+/* =====================================================
+   1차 로딩
+   - Slash Commands
+   - Prefix Commands
+===================================================== */
 
 for (const file of rootFiles) {
   const mod = loadModule(file);
@@ -129,30 +199,33 @@ for (const file of rootFiles) {
     continue;
   }
 
-  /* -----------------------------
-     슬래시 명령어
-  ----------------------------- */
+  /* -------------------------------------------------
+     Slash Command
+  ------------------------------------------------- */
 
   if (
     mod.data &&
     typeof mod.execute === 'function' &&
     mod.data.name
   ) {
+    const commandName =
+      String(mod.data.name).toLowerCase();
+
     client.commands.set(
-      mod.data.name,
+      commandName,
       mod
     );
 
     console.log(
-      `✅ 슬래시 명령어 로드: /${mod.data.name}`
+      `✅ 슬래시 명령어 로드: /${commandName}`
     );
 
     continue;
   }
 
-  /* -----------------------------
-     이벤트 파일은 제외
-  ----------------------------- */
+  /* -------------------------------------------------
+     Discord Event
+  ------------------------------------------------- */
 
   if (
     typeof mod.name === 'string' &&
@@ -161,16 +234,38 @@ for (const file of rootFiles) {
     continue;
   }
 
-  /* -----------------------------
-     접두사 명령어
-  ----------------------------- */
+  /* -------------------------------------------------
+     Prefix Command
+     
+     지원 형식:
+
+     module.exports = {
+       name: '핑',
+       execute(message, args, client) {}
+     }
+
+     또는
+
+     module.exports = {
+       name: '경고',
+       aliases: ['warn'],
+       execute(message, args, client) {}
+     }
+  ------------------------------------------------- */
 
   if (
     typeof mod.name === 'string' &&
     typeof mod.execute === 'function'
   ) {
     const commandName =
-      mod.name.toLowerCase();
+      mod.name
+        .replace(/^!/, '')
+        .trim()
+        .toLowerCase();
+
+    if (!commandName) {
+      continue;
+    }
 
     client.prefixCommands.set(
       commandName,
@@ -178,23 +273,87 @@ for (const file of rootFiles) {
     );
 
     console.log(
-      `✅ 접두사 명령어 로드: !${mod.name}`
+      `✅ 접두사 명령어 로드: !${commandName}`
     );
+
+    /* aliases */
+
+    if (Array.isArray(mod.aliases)) {
+      for (const alias of mod.aliases) {
+        if (!alias) {
+          continue;
+        }
+
+        const aliasName =
+          String(alias)
+            .replace(/^!/, '')
+            .trim()
+            .toLowerCase();
+
+        if (!aliasName) {
+          continue;
+        }
+
+        client.prefixCommands.set(
+          aliasName,
+          mod
+        );
+
+        console.log(
+          `↳ 별칭 로드: !${aliasName}`
+        );
+      }
+    }
   }
 }
 
+/* =====================================================
+   관리자 Store 초기화
+===================================================== */
+
+try {
+  const adminStore =
+    require(
+      path.join(ROOT, 'adminStore.js')
+    );
+
+  if (
+    adminStore &&
+    typeof adminStore.seedOwners === 'function'
+  ) {
+    adminStore.seedOwners();
+
+    console.log(
+      '👑 오너 데이터 초기화 완료'
+    );
+  }
+} catch (error) {
+  console.error(
+    '⚠️ 관리자 Store 초기화 실패:',
+    error.message
+  );
+}
+
+/* =====================================================
+   로딩 결과
+===================================================== */
+
 console.log('');
+console.log('====================================');
+console.log('📦 명령어 로딩 결과');
+console.log('====================================');
 console.log(
-  `📦 슬래시 명령어: ${client.commands.size}개`
+  `⚡ 슬래시 명령어: ${client.commands.size}개`
 );
-
 console.log(
-  `📦 접두사 명령어: ${client.prefixCommands.size}개`
+  `⌨️ 접두사 명령어: ${client.prefixCommands.size}개`
 );
+console.log('====================================');
+console.log('');
 
-/* =====================================
+/* =====================================================
    이벤트 로드
-===================================== */
+===================================================== */
 
 for (const file of rootFiles) {
   const mod = loadModule(file);
@@ -215,7 +374,7 @@ for (const file of rootFiles) {
   }
 
   /*
-    index.js에서 직접 처리하는 이벤트
+    아래 3개는 index.js에서 직접 처리합니다.
   */
 
   if (
@@ -231,28 +390,28 @@ for (const file of rootFiles) {
       client.once(
         mod.name,
         (...args) => {
-          try {
-            mod.execute(...args, client);
-          } catch (error) {
+          Promise.resolve(
+            mod.execute(...args, client)
+          ).catch(error => {
             console.error(
               `❌ 이벤트 ${mod.name} 오류:`,
               error
             );
-          }
+          });
         }
       );
     } else {
       client.on(
         mod.name,
         (...args) => {
-          try {
-            mod.execute(...args, client);
-          } catch (error) {
+          Promise.resolve(
+            mod.execute(...args, client)
+          ).catch(error => {
             console.error(
               `❌ 이벤트 ${mod.name} 오류:`,
               error
             );
-          }
+          });
         }
       );
     }
@@ -269,117 +428,147 @@ for (const file of rootFiles) {
   }
 }
 
-/* =====================================
+/* =====================================================
    READY
-===================================== */
+===================================================== */
 
-client.once('ready', async () => {
+client.once(
+  'ready',
+  async () => {
 
-  console.log('');
-  console.log('====================================');
-  console.log('🤖 디톤 패밀리 관리봇');
-  console.log('====================================');
-  console.log(
-    `👤 로그인: ${client.user.tag}`
-  );
-  console.log('🟢 상태: ONLINE');
-  console.log(
-    `🏠 서버: ${client.guilds.cache.size}개`
-  );
-  console.log(
-    `⚡ 슬래시: ${client.commands.size}개`
-  );
-  console.log(
-    `⌨️ 접두사: ${client.prefixCommands.size}개`
-  );
-  console.log('====================================');
-
-  /* ===================================
-     슬래시 명령어 서버 등록
-  =================================== */
-
-  const slashCommands = [
-    ...client.commands.values()
-  ]
-    .filter(command => {
-      return (
-        command.data &&
-        typeof command.data.toJSON === 'function'
-      );
-    })
-    .map(command => {
-      return command.data.toJSON();
-    });
-
-  for (const guild of client.guilds.cache.values()) {
-
-    try {
-
-      await guild.commands.set(
-        slashCommands
-      );
-
-      console.log(
-        `✅ 명령어 등록 완료: ${guild.name}`
-      );
-
-    } catch (error) {
-
-      console.error(
-        `❌ ${guild.name} 명령어 등록 실패:`,
-        error.message
-      );
-    }
-  }
-
-  /* ===================================
-     상태메시지
-  =================================== */
-
-  const statuses = [
-    '패밀리 관리중',
-    '디톤님 도와주는중',
-    '방송중',
-    '듣는중'
-  ];
-
-  let statusIndex = 0;
-
-  function updateStatus() {
-
-    if (!client.user) {
-      return;
-    }
-
-    client.user.setActivity(
-      statuses[statusIndex],
-      {
-        type: ActivityType.Playing
-      }
+    console.log('');
+    console.log(
+      '===================================='
+    );
+    console.log(
+      '🤖 디톤 패밀리 관리봇'
+    );
+    console.log(
+      '===================================='
     );
 
-    statusIndex =
-      (statusIndex + 1) %
-      statuses.length;
+    console.log(
+      `👤 로그인: ${client.user.tag}`
+    );
+
+    console.log(
+      '🟢 상태: ONLINE'
+    );
+
+    console.log(
+      `🏠 서버: ${client.guilds.cache.size}개`
+    );
+
+    console.log(
+      `⚡ 슬래시: ${client.commands.size}개`
+    );
+
+    console.log(
+      `⌨️ 접두사: ${client.prefixCommands.size}개`
+    );
+
+    console.log(
+      '===================================='
+    );
+
+    /* ===============================================
+       Slash Commands 서버 등록
+    =============================================== */
+
+    const slashCommands = [
+      ...client.commands.values()
+    ]
+      .filter(command => {
+        return (
+          command.data &&
+          typeof command.data.toJSON === 'function'
+        );
+      })
+      .map(command => {
+        return command.data.toJSON();
+      });
+
+    for (
+      const guild
+      of client.guilds.cache.values()
+    ) {
+
+      try {
+
+        await guild.commands.set(
+          slashCommands
+        );
+
+        console.log(
+          `✅ 슬래시 등록 완료: ${guild.name} (${slashCommands.length}개)`
+        );
+
+      } catch (error) {
+
+        console.error(
+          `❌ ${guild.name} 슬래시 등록 실패:`,
+          error.message
+        );
+      }
+    }
+
+    /* ===============================================
+       상태메시지
+    =============================================== */
+
+    const statuses = [
+      '패밀리 관리중',
+      '디톤님 도와주는중',
+      '방송중',
+      '듣는중'
+    ];
+
+    let statusIndex = 0;
+
+    function updateStatus() {
+
+      if (!client.user) {
+        return;
+      }
+
+      client.user.setActivity(
+        statuses[statusIndex],
+        {
+          type: ActivityType.Playing
+        }
+      );
+
+      statusIndex =
+        (statusIndex + 1) %
+        statuses.length;
+    }
+
+    updateStatus();
+
+    setInterval(
+      updateStatus,
+      10000
+    );
   }
+);
 
-  updateStatus();
-
-  setInterval(
-    updateStatus,
-    10000
-  );
-});
-
-/* =====================================
-   슬래시 명령어
-===================================== */
+/* =====================================================
+   Slash Command Handler
+===================================================== */
 
 client.on(
   'interactionCreate',
   async interaction => {
 
-    if (!interaction.isChatInputCommand()) {
+    /*
+      버튼 / 모달 / 기타 interaction은
+      기존 모듈이 처리할 수 있도록
+      Chat Input Command만 여기서 처리합니다.
+    */
+
+    if (
+      !interaction.isChatInputCommand()
+    ) {
       return;
     }
 
@@ -390,11 +579,13 @@ client.on(
 
     if (!command) {
 
-      await interaction.reply({
-        content:
-          '❌ 등록되지 않은 명령어입니다.',
-        ephemeral: true
-      }).catch(() => {});
+      if (!interaction.replied) {
+        await interaction.reply({
+          content:
+            '❌ 등록되지 않은 명령어입니다.',
+          ephemeral: true
+        }).catch(() => {});
+      }
 
       return;
     }
@@ -438,9 +629,9 @@ client.on(
   }
 );
 
-/* =====================================
-   메시지 / 접두사 명령어
-===================================== */
+/* =====================================================
+   Prefix Command Handler
+===================================================== */
 
 client.on(
   'messageCreate',
@@ -450,12 +641,99 @@ client.on(
       return;
     }
 
-    const content =
-      message.content.trim();
+    if (!message.guild) {
+      return;
+    }
 
-    /* =================================
+    const content =
+      message.content
+        .trim();
+
+    /* ===============================================
+       !도움말 / !명령어
+       
+       실제 help.js가 존재하면 help.js가 처리합니다.
+       여기서는 help.js가 로드되지 않았을 경우를
+       대비한 기본 도움말만 제공합니다.
+    =============================================== */
+
+    if (
+      content === '!도움말' ||
+      content === '!명령어'
+    ) {
+
+      const helpCommand =
+        client.prefixCommands.get(
+          '도움말'
+        );
+
+      /*
+        help.js가 정상적으로 로드된 경우
+        여기서 중복 응답하지 않습니다.
+      */
+
+      if (helpCommand) {
+        return;
+      }
+
+      const embed =
+        require('discord.js')
+          .EmbedBuilder;
+
+      const help =
+        new embed()
+          .setTitle(
+            '📖 디톤 관리봇 도움말'
+          )
+          .setDescription(
+            '디톤 패밀리 관리봇 명령어입니다.'
+          )
+          .addFields(
+            {
+              name: '🤖 기본',
+              value: [
+                '`!봇상태`',
+                '`!핑`',
+                '`!서버정보`',
+                '`!유저정보 @유저`'
+              ].join('\n')
+            },
+            {
+              name: '⚠️ 경고',
+              value: [
+                '`!경고 @유저 사유`',
+                '`!경고조회 @유저`',
+                '`!경고초기화 @유저`'
+              ].join('\n')
+            },
+            {
+              name: '👑 오너 / 관리자',
+              value: [
+                '`!리스트`',
+                '`!오너등록`',
+                '`!관리자발급 @유저`',
+                '`!관리자등록`',
+                '`!관리자제거 @유저`',
+                '`!설정패널`'
+              ].join('\n')
+            }
+          )
+          .setFooter({
+            text:
+              '디톤 패밀리 관리봇'
+          })
+          .setTimestamp();
+
+      await message.reply({
+        embeds: [help]
+      }).catch(() => {});
+
+      return;
+    }
+
+    /* ===============================================
        !봇상태
-    ================================= */
+    =============================================== */
 
     if (
       content === '!봇상태'
@@ -475,8 +753,10 @@ client.on(
       const totalMembers =
         client.guilds.cache.reduce(
           (total, guild) => {
-            return total +
-              (guild.memberCount || 0);
+            return (
+              total +
+              (guild.memberCount || 0)
+            );
           },
           0
         );
@@ -500,7 +780,9 @@ client.on(
       const guildList =
         client.guilds.cache
           .map(guild => {
-            return `• **${guild.name}** — ${guild.memberCount}명`;
+            return (
+              `• **${guild.name}** — ${guild.memberCount}명`
+            );
           })
           .join('\n');
 
@@ -560,13 +842,23 @@ client.on(
       return;
     }
 
-    /* =================================
-       접두사 명령어
-    ================================= */
+    /* ===============================================
+       접두사 명령어가 아니면 종료
+    =============================================== */
 
-    if (!content.startsWith('!')) {
+    if (
+      !content.startsWith('!')
+    ) {
       return;
     }
+
+    /* ===============================================
+       명령어 파싱
+       
+       !경고 @유저 사유
+       !관리자발급 @유저
+       !리스트
+    =============================================== */
 
     const parts =
       content
@@ -575,7 +867,10 @@ client.on(
         .split(/\s+/);
 
     const commandName =
-      (parts.shift() || '')
+      (
+        parts.shift() ||
+        ''
+      )
         .toLowerCase();
 
     if (!commandName) {
@@ -588,6 +883,12 @@ client.on(
       );
 
     if (!command) {
+
+      /*
+        알 수 없는 !명령어는
+        조용히 무시합니다.
+      */
+
       return;
     }
 
@@ -615,9 +916,9 @@ client.on(
   }
 );
 
-/* =====================================
-   Discord 오류
-===================================== */
+/* =====================================================
+   Discord Error
+===================================================== */
 
 client.on(
   'error',
@@ -641,9 +942,9 @@ client.on(
   }
 );
 
-/* =====================================
-   프로세스 오류
-===================================== */
+/* =====================================================
+   Process Error
+===================================================== */
 
 process.on(
   'unhandledRejection',
@@ -667,9 +968,9 @@ process.on(
   }
 );
 
-/* =====================================
+/* =====================================================
    LOGIN
-===================================== */
+===================================================== */
 
 client
   .login(TOKEN)
