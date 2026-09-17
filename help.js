@@ -1,41 +1,99 @@
-// commands/help.js
-const { SlashCommandBuilder, EmbedBuilder } = require('discord.js');
+// events/help.js
+
+const {
+  EmbedBuilder,
+} = require('discord.js');
 
 module.exports = {
-  data: new SlashCommandBuilder().setName('help').setDescription('사용 가능한 모든 명령어를 표시합니다.'),
+  name: 'messageCreate',
+  once: false,
 
-  async execute(interaction) {
+  async execute(message) {
+    if (message.author.bot) return;
+    if (!message.guild) return;
+
+    const content = message.content.trim();
+
+    if (
+      content !== '!도움말' &&
+      content !== '!명령어'
+    ) {
+      return;
+    }
+
     const embed = new EmbedBuilder()
-      .setColor(0x5865f2)
-      .setTitle('📖 도움말')
-      .setDescription('사용 가능한 명령어 목록입니다.')
+      .setTitle('📖 디톤 관리봇 도움말')
+      .setDescription(
+        '디톤 관리봇에서 사용할 수 있는 명령어입니다.'
+      )
       .addFields(
         {
-          name: '🔧 일반',
-          value: '`/ping` `/botinfo` `/serverinfo` `/userinfo` `/avatar` `/servericon` `/invite` `/help` `/stats`',
+          name: '🤖 기본',
+          value: [
+            '`!봇상태` — 봇 상태 및 핑 확인',
+            '`!핑` — 봇 핑 확인',
+            '`!서버정보` — 서버 정보 확인',
+            '`!유저정보 @유저` — 유저 정보 확인',
+          ].join('\n'),
         },
+
         {
-          name: '📊 활동',
-          value:
-            '`/활동확인` `/활동초기화` `!음성` `!음성랭킹` `!채팅` `!채팅랭킹` `!활동초기화`\n매일 자정(KST)에 자동 초기화됩니다.',
+          name: '🛡️ 관리',
+          value: [
+            '`!청소 <개수>` — 메시지 삭제',
+            '`!킥 @유저 [사유]` — 유저 추방',
+            '`!밴 @유저 [사유]` — 유저 차단',
+            '`!뮤트 @유저 <분>` — 유저 타임아웃',
+            '`!경고 @유저 [사유]` — 경고 추가',
+            '`!경고조회 @유저` — 경고 확인',
+          ].join('\n'),
         },
+
         {
-          name: '🎫 티켓',
-          value: '`!티켓버튼` (패널 게시) · 티켓 채널의 🔒 버튼으로 닫기',
+          name: '🔐 보안',
+          value: [
+            '`!화리추가 @유저` — 화이트리스트 추가',
+            '`!화리제거 @유저` — 화이트리스트 제거',
+            '`!로그` — 관리 로그 확인',
+          ].join('\n'),
         },
+
         {
-          name: '🛡️ 관리 (Discord 서버 권한 필요)',
-          value:
-            '`/kick` `/ban` `/unban` `/timeout` `/untimeout` `/warn` `/warnings` `/clearwarnings` `/announce` `/이벤트` `/설정`',
+          name: '👑 오너 / 관리자',
+          value: [
+            '`!리스트` — 오너/관리자 목록',
+            '`!오너등록` — 오너 등록',
+            '`!관리자등록` — 관리자 라이선스 등록',
+            '`!관리자발급 @유저` — 관리자 라이선스 발급',
+            '`!관리자제거 @유저` — 관리자 제거',
+            '`!설정패널` — 관리자 권한 설정',
+          ].join('\n'),
         },
+
         {
-          name: '👑 오너/관리자 시스템 (봇 전역)',
-          value: '`!오너` `!관리자` `!관리자등록` `!관리자제거` `!라이센스생성` (오너 전용) `!관리자패널` (관리자/오너 전용)',
+          name: '🎙️ 음성',
+          value: [
+            '`!음성랭킹` — 음성 활동 랭킹',
+            '`!음성로그` — 음성 입장/퇴장 로그',
+            '`!음성랭크채팅` — 음성 랭킹 채널 설정',
+          ].join('\n'),
         },
+
+        {
+          name: '🎫 라이선스',
+          value: [
+            '관리자 라이선스는 `diton_` + 6자리 숫자 형식입니다.',
+            '라이선스 등록은 DM 버튼을 통해 진행됩니다.',
+          ].join('\n'),
+        }
       )
-      .setFooter({ text: '괄호 안의 옵션은 명령어 입력 시 자동완성으로 확인할 수 있습니다.' })
+      .setFooter({
+        text: '디톤 관리봇 • !도움말 / !명령어',
+      })
       .setTimestamp();
 
-    await interaction.reply({ embeds: [embed] });
+    await message.reply({
+      embeds: [embed],
+    });
   },
 };
