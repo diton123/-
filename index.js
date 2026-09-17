@@ -3,6 +3,7 @@ require('dotenv').config();
 
 const fs = require('fs');
 const path = require('path');
+
 const {
   Client,
   GatewayIntentBits,
@@ -18,7 +19,16 @@ if (!process.env.DISCORD_TOKEN) {
   process.exit(1);
 }
 
-seedOwners();
+// 기본 오너 데이터 준비
+try {
+  seedOwners();
+} catch (err) {
+  logger.error('오너 데이터 초기화 실패', err);
+}
+
+// ==============================
+// Discord Client
+// ==============================
 
 const client = new Client({
   intents: [
@@ -29,45 +39,76 @@ const client = new Client({
     GatewayIntentBits.GuildPresences,
     GatewayIntentBits.GuildVoiceStates,
   ],
+
   partials: [
     Partials.Channel,
     Partials.Message,
   ],
 });
 
-// 존재하지 않는 폴더 때문에 봇이 꺼지지 않도록 처리
-const safeReadJsFiles = (dir) => {
-  if (!fs.existsSync(dir)) return [];
+// ==============================
+// 공통 파일 로더
+// ==============================
+
+function safeReadJsFiles(dir) {
+  if (!fs.existsSync(dir)) {
+    logger.warn(`폴더가 없습니다: ${dir}`);
+    return [];
+  }
 
   return fs
     .readdirSync(dir)
     .filter((file) => file.endsWith('.js'));
-};
+}
 
 // ==============================
-// 슬래시 명령어 로드
+// Slash Commands
 // ==============================
 
 client.commands = new Collection();
 
-const commandsPath = path.join(__dirname, 'commands');
+const commandsPath = path.join(
+  __dirname,
+  'commands'
+);
 
 for (const file of safeReadJsFiles(commandsPath)) {
   try {
-    const command = require(path.join(commandsPath, file));
+    const filePath = path.join(
+      commandsPath,
+      file
+    );
 
-    if (command?.data && command?.execute) {
-      client.commands.set(command.data.name, command);
+    const command = require(filePath);
+
+    if (
+      command &&
+      command.data &&
+      typeof command.execute === 'function'
+    ) {
+      client.commands.set(
+        command.data.name,
+        command
+      );
+
+      logger.log(
+        `슬래시 명령어 로드: ${command.data.name}`
+      );
     }
   } catch (err) {
-    logger.error(`명령어 로드 실패: ${file}`, err);
+    logger.error(
+      `슬래시 명령어 로드 실패: ${file}`,
+      err
+    );
   }
 }
 
-logger.log(`${client.commands.size}개의 슬래시 명령어를 로드했습니다.`);
+logger.log(
+  `${client.commands.size}개의 슬래시 명령어를 로드했습니다.`
+);
 
 // ==============================
-// 접두사 명령어 로드
+// Prefix Commands
 // ==============================
 
 client.prefixCommands = new Collection();
@@ -79,12 +120,26 @@ const prefixCommandsPath = path.join(
 
 for (const file of safeReadJsFiles(prefixCommandsPath)) {
   try {
-    const command = require(
-      path.join(prefixCommandsPath, file)
+    const filePath = path.join(
+      prefixCommandsPath,
+      file
     );
 
-    if (command?.name && command?.execute) {
-      client.prefixCommands.set(command.name, command);
+    const command = require(filePath);
+
+    if (
+      command &&
+      command.name &&
+      typeof command.execute === 'function'
+    ) {
+      client.prefixCommands.set(
+        command.name,
+        command
+      );
+
+      logger.log(
+        `접두사 명령어 로드: !${command.name}`
+      );
     }
   } catch (err) {
     logger.error(
@@ -99,32 +154,64 @@ logger.log(
 );
 
 // ==============================
-// 이벤트 핸들러 로드
+// Events
 // ==============================
 
-const eventsPath = path.join(__dirname, 'events');
+const eventsPath = path.join(
+  __dirname,
+  'events'
+);
 
 for (const file of safeReadJsFiles(eventsPath)) {
   try {
-    const event = require(
-      path.join(eventsPath, file)
+    const filePath = path.join(
+      eventsPath,
+      file
     );
 
-    if (!event?.name || !event?.execute) {
+    const event = require(filePath);
+
+    if (
+      !event ||
+      !event.name ||
+      typeof event.execute !== 'function'
+    ) {
+      logger.warn(
+        `잘못된 이벤트 형식: ${file}`
+      );
       continue;
     }
+
+    const handler = (...args) => {
+      try {
+        return event.execute(
+          ...args,
+          client
+        );
+      } catch (err) {
+        logger.error(
+          `이벤트 실행 오류: ${event.name}`,
+          err
+        );
+      }
+    };
 
     if (event.once) {
       client.once(
         event.name,
-        (...args) => event.execute(...args, client)
+        handler
       );
     } else {
       client.on(
         event.name,
-        (...args) => event.execute(...args, client)
+        handler
       );
     }
+
+    logger.log(
+      `이벤트 로드: ${event.name} (${file})`
+    );
+
   } catch (err) {
     logger.error(
       `이벤트 로드 실패: ${file}`,
@@ -134,87 +221,182 @@ for (const file of safeReadJsFiles(eventsPath)) {
 }
 
 // ==============================
+// 봇 상태
+// ==============================
+
+client.once('ready', () => {
+  logger.log(
+    `🤖 로그인 완료: ${client.user.tag}`
+  );
+
+  logger.log(
+    `📡 서버 수: ${client.guilds.cache.size}`
+  );
+
+  logger.log(
+    `⚙️ Prefix 명령어: ${client.prefixCommands.size}개`
+  );
+
+  logger.log(
+    `🔧 Slash 명령어: ${client.commands.size}개`
+  );
+
+  client.user.setPresence({
+    activities: [
+      {
+        name: '디톤 관리중',
+        type: 0,
+      },
+    ],
+    status: 'online',
+  });
+});
+
+// ==============================
 // !봇상태
+//
+// messageCreate는 이미
+// events/messageCreate.js에서 처리하므로
+// 여기서는 별도의 messageCreate 이벤트를
+// 만들지 않습니다.
 // ==============================
 
 client.on('messageCreate', async (message) => {
   if (message.author.bot) return;
 
-  if (message.content.trim() !== '!봇상태') return;
+  if (
+    !message.guild &&
+    message.content.trim() !== '!봇상태'
+  ) {
+    return;
+  }
 
-  const formatUptime = () => {
-    const totalSeconds = Math.floor(
-      (client.uptime || 0) / 1000
-    );
-
-    const days = Math.floor(
-      totalSeconds / 86400
-    );
-
-    const hours = Math.floor(
-      (totalSeconds % 86400) / 3600
-    );
-
-    const minutes = Math.floor(
-      (totalSeconds % 3600) / 60
-    );
-
-    const seconds = totalSeconds % 60;
-
-    return `${days}일 ${hours}시간 ${minutes}분 ${seconds}초`;
-  };
-
-  const makeStatusMessage = () => {
-    const status = client.isReady()
-      ? '🟢 온라인'
-      : '🔴 오프라인';
-
-    const ping = client.ws.ping;
-
-    const lastCheck = Math.floor(
-      Date.now() / 1000
-    );
-
-    return [
-      `🤖 **현재 봇 상태는 ${status} 입니다.**`,
-      '',
-      `📡 핑: **${ping}ms**`,
-      `⏱️ 가동시간: **${formatUptime()}**`,
-      `🔄 마지막 확인: <t:${lastCheck}:T>`,
-    ].join('\n');
-  };
+  if (
+    message.content.trim() !== '!봇상태'
+  ) {
+    return;
+  }
 
   try {
-    const sentMessage = await message.reply(
-      makeStatusMessage()
+    const getUptime = () => {
+      const totalSeconds = Math.floor(
+        (client.uptime || 0) / 1000
+      );
+
+      const days = Math.floor(
+        totalSeconds / 86400
+      );
+
+      const hours = Math.floor(
+        (totalSeconds % 86400) / 3600
+      );
+
+      const minutes = Math.floor(
+        (totalSeconds % 3600) / 60
+      );
+
+      const seconds =
+        totalSeconds % 60;
+
+      return `${days}일 ${hours}시간 ${minutes}분 ${seconds}초`;
+    };
+
+    const getStatus = () => {
+      return client.isReady()
+        ? '🟢 온라인'
+        : '🔴 오프라인';
+    };
+
+    const createStatus = () => {
+      const ping = Math.round(
+        client.ws.ping
+      );
+
+      const timestamp =
+        Math.floor(Date.now() / 1000);
+
+      return [
+        '🤖 **디톤 관리봇 상태**',
+        '',
+        `상태: **${getStatus()}**`,
+        `📡 핑: **${ping}ms**`,
+        `⏱️ 가동시간: **${getUptime()}**`,
+        `🕐 확인: <t:${timestamp}:T>`,
+      ].join('\n');
+    };
+
+    const statusMessage =
+      await message.reply(
+        createStatus()
+      );
+
+    const timer = setInterval(
+      async () => {
+        try {
+          await statusMessage.edit(
+            createStatus()
+          );
+        } catch {
+          clearInterval(timer);
+        }
+      },
+      5000
     );
 
-    // 5초마다 실시간 갱신
-    const updateTimer = setInterval(async () => {
-      try {
-        await sentMessage.edit(
-          makeStatusMessage()
-        );
-      } catch (err) {
-        clearInterval(updateTimer);
-      }
-    }, 5000);
-
-    // 최대 5분 동안 갱신
     setTimeout(() => {
-      clearInterval(updateTimer);
+      clearInterval(timer);
     }, 5 * 60 * 1000);
 
   } catch (err) {
     logger.error(
-      '!봇상태 응답 실패',
+      '!봇상태 처리 실패',
       err
     );
   }
 });
 
 // ==============================
-// 오류 방지
+// Discord 오류
+// ==============================
+
+client.on('error', (err) => {
+  logger.error(
+    'Discord Client 오류',
+    err
+  );
+});
+
+client.on('warn', (info) => {
+  logger.warn(info);
+});
+
+client.on('shardError', (err) => {
+  logger.error(
+    'Shard 오류',
+    err
+  );
+});
+
+client.on(
+  'shardReconnecting',
+  (id) => {
+    logger.warn(
+      `Shard ${id} 재연결 중`
+    );
+  }
+);
+
+client.on(
+  'shardResume',
+  (id, replayed) => {
+    logger.log(
+      `Shard ${id} 재연결 완료 (${replayed}개 이벤트 재생)`
+    );
+  }
+);
+
+// ==============================
+// Process 오류
 // ==============================
 
 process.on(
@@ -237,22 +419,15 @@ process.on(
   }
 );
 
-client.on(
-  'warn',
-  (info) => {
-    logger.warn(info);
-  }
-);
-
 // ==============================
-// 봇 로그인
+// 로그인
 // ==============================
 
 client.login(
   process.env.DISCORD_TOKEN
 ).catch((err) => {
   logger.error(
-    '로그인 실패. DISCORD_TOKEN 값을 확인해주세요.',
+    'Discord 로그인 실패',
     err
   );
 
