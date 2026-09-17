@@ -14,11 +14,15 @@ const logger = require('./utils/logger');
 const { seedOwners } = require('./utils/adminStore');
 
 if (!process.env.DISCORD_TOKEN) {
-  logger.error('DISCORD_TOKEN 환경변수가 설정되어 있지 않습니다.');
+  console.error('❌ DISCORD_TOKEN이 없습니다.');
   process.exit(1);
 }
 
-seedOwners();
+try {
+  seedOwners();
+} catch (err) {
+  console.error('❌ 오너 데이터 초기화 실패:', err);
+}
 
 const client = new Client({
   intents: [
@@ -35,191 +39,332 @@ const client = new Client({
   ],
 });
 
-// 존재하지 않는 폴더 때문에 봇이 꺼지지 않도록 처리
-const safeReadJsFiles = (dir) => {
-  if (!fs.existsSync(dir)) return [];
-
-  return fs
-    .readdirSync(dir)
-    .filter((file) => file.endsWith('.js'));
-};
-
-// ==============================
-// 슬래시 명령어 로드
-// ==============================
-
 client.commands = new Collection();
+client.prefixCommands = new Collection();
 
-const commandsPath = path.join(__dirname, 'commands');
+const ROOT = __dirname;
 
-for (const file of safeReadJsFiles(commandsPath)) {
+function loadModule(filePath, type) {
   try {
-    const command = require(path.join(commandsPath, file));
+    delete require.cache[require.resolve(filePath)];
 
-    if (command?.data && command?.execute) {
-      client.commands.set(command.data.name, command);
+    const mod = require(filePath);
+
+    if (!mod) return null;
+
+    if (type === 'slash') {
+      if (
+        mod.data &&
+        typeof mod.execute === 'function'
+      ) {
+        client.commands.set(
+          mod.data.name,
+          mod
+        );
+
+        logger.log(
+          `✅ 슬래시 명령어 로드: /${mod.data.name}`
+        );
+
+        return mod;
+      }
     }
+
+    if (type === 'prefix') {
+      if (
+        mod.name &&
+        typeof mod.execute === 'function'
+      ) {
+        client.prefixCommands.set(
+          mod.name,
+          mod
+        );
+
+        logger.log(
+          `✅ 접두사 명령어 로드: !${mod.name}`
+        );
+
+        return mod;
+      }
+    }
+
+    return null;
   } catch (err) {
-    logger.error(`명령어 로드 실패: ${file}`, err);
+    logger.error(
+      `❌ 모듈 로드 실패: ${filePath}`,
+      err
+    );
+    return null;
   }
 }
 
-logger.log(`${client.commands.size}개의 슬래시 명령어를 로드했습니다.`);
+function loadDirectory(dir, type) {
+  if (!fs.existsSync(dir)) return;
 
-// ==============================
-// 접두사 명령어 로드
-// ==============================
+  const files = fs
+    .readdirSync(dir)
+    .filter(file => file.endsWith('.js'));
 
-client.prefixCommands = new Collection();
-
-const prefixCommandsPath = path.join(
-  __dirname,
-  'commands-prefix'
-);
-
-for (const file of safeReadJsFiles(prefixCommandsPath)) {
-  try {
-    const command = require(
-      path.join(prefixCommandsPath, file)
-    );
-
-    if (command?.name && command?.execute) {
-      client.prefixCommands.set(command.name, command);
-    }
-  } catch (err) {
-    logger.error(
-      `접두사 명령어 로드 실패: ${file}`,
-      err
+  for (const file of files) {
+    loadModule(
+      path.join(dir, file),
+      type
     );
   }
+}
+
+// =====================================
+// 명령어 로드
+// =====================================
+
+// 기존 구조
+loadDirectory(
+  path.join(ROOT, 'commands'),
+  'slash'
+);
+
+loadDirectory(
+  path.join(ROOT, 'commands-prefix'),
+  'prefix'
+);
+
+// 현재 저장소 루트 구조
+const rootFiles = fs
+  .readdirSync(ROOT)
+  .filter(file => file.endsWith('.js'));
+
+for (const file of rootFiles) {
+  const fullPath = path.join(ROOT, file);
+
+  // index.js 자신은 제외
+  if (file === 'index.js') continue;
+
+  // 이벤트 파일은 아래 이벤트 로더에서 처리
+  const eventNames = [
+    'ready.js',
+    'messageCreate.js',
+    'messageDelete.js',
+    'messageUpdate.js',
+    'interactionCreate.js',
+    'guildMemberAdd.js',
+    'guildMemberRemove.js',
+    'guildMemberUpdate.js',
+    'shardReconnecting.js',
+    'shardResume.js',
+  ];
+
+  if (eventNames.includes(file)) continue;
+
+  // slash 명령어
+  loadModule(fullPath, 'slash');
+
+  // prefix 명령어
+  loadModule(fullPath, 'prefix');
 }
 
 logger.log(
-  `${client.prefixCommands.size}개의 접두사 명령어를 로드했습니다.`
+  `📊 슬래시 명령어 ${client.commands.size}개`
 );
 
-// ==============================
-// 이벤트 핸들러 로드
-// ==============================
+logger.log(
+  `📊 접두사 명령어 ${client.prefixCommands.size}개`
+);
 
-const eventsPath = path.join(__dirname, 'events');
+// =====================================
+// 이벤트 로드
+// =====================================
 
-for (const file of safeReadJsFiles(eventsPath)) {
+const eventFiles = [
+  'ready.js',
+  'messageCreate.js',
+  'messageDelete.js',
+  'messageUpdate.js',
+  'interactionCreate.js',
+  'guildMemberAdd.js',
+  'guildMemberRemove.js',
+  'guildMemberUpdate.js',
+  'shardReconnecting.js',
+  'shardResume.js',
+];
+
+for (const file of eventFiles) {
+  const fullPath = path.join(
+    ROOT,
+    file
+  );
+
+  if (!fs.existsSync(fullPath)) continue;
+
   try {
-    const event = require(
-      path.join(eventsPath, file)
-    );
+    delete require.cache[
+      require.resolve(fullPath)
+    ];
 
-    if (!event?.name || !event?.execute) {
+    const event = require(fullPath);
+
+    if (
+      !event ||
+      !event.name ||
+      typeof event.execute !== 'function'
+    ) {
+      logger.warn(
+        `⚠️ 이벤트 형식 오류: ${file}`
+      );
       continue;
     }
+
+    const handler = (...args) => {
+      Promise.resolve(
+        event.execute(...args, client)
+      ).catch(err => {
+        logger.error(
+          `❌ 이벤트 실행 오류: ${event.name}`,
+          err
+        );
+      });
+    };
 
     if (event.once) {
       client.once(
         event.name,
-        (...args) => event.execute(...args, client)
+        handler
       );
     } else {
       client.on(
         event.name,
-        (...args) => event.execute(...args, client)
+        handler
       );
     }
+
+    logger.log(
+      `✅ 이벤트 로드: ${event.name}`
+    );
+
   } catch (err) {
     logger.error(
-      `이벤트 로드 실패: ${file}`,
+      `❌ 이벤트 로드 실패: ${file}`,
       err
     );
   }
 }
 
-// ==============================
+// =====================================
 // !봇상태
-// ==============================
+// =====================================
 
-client.on('messageCreate', async (message) => {
-  if (message.author.bot) return;
+client.on(
+  'messageCreate',
+  async message => {
+    if (message.author.bot) return;
 
-  if (message.content.trim() !== '!봇상태') return;
+    if (
+      message.content.trim() !==
+      '!봇상태'
+    ) {
+      return;
+    }
 
-  const formatUptime = () => {
-    const totalSeconds = Math.floor(
-      (client.uptime || 0) / 1000
-    );
+    const uptime = () => {
+      const seconds = Math.floor(
+        (client.uptime || 0) / 1000
+      );
 
-    const days = Math.floor(
-      totalSeconds / 86400
-    );
+      const days = Math.floor(
+        seconds / 86400
+      );
 
-    const hours = Math.floor(
-      (totalSeconds % 86400) / 3600
-    );
+      const hours = Math.floor(
+        (seconds % 86400) / 3600
+      );
 
-    const minutes = Math.floor(
-      (totalSeconds % 3600) / 60
-    );
+      const minutes = Math.floor(
+        (seconds % 3600) / 60
+      );
 
-    const seconds = totalSeconds % 60;
+      const secs = seconds % 60;
 
-    return `${days}일 ${hours}시간 ${minutes}분 ${seconds}초`;
-  };
+      return `${days}일 ${hours}시간 ${minutes}분 ${secs}초`;
+    };
 
-  const makeStatusMessage = () => {
-    const status = client.isReady()
-      ? '🟢 온라인'
-      : '🔴 오프라인';
+    const status = () => {
+      return [
+        '🤖 **디톤 관리봇 상태**',
+        '',
+        `🟢 상태: **온라인**`,
+        `📡 핑: **${client.ws.ping}ms**`,
+        `⏱️ 가동시간: **${uptime()}**`,
+        `🏠 서버: **${client.guilds.cache.size}개**`,
+        `⚙️ Prefix 명령어: **${client.prefixCommands.size}개**`,
+        `🔧 Slash 명령어: **${client.commands.size}개**`,
+        `🕐 확인: <t:${Math.floor(Date.now() / 1000)}:T>`,
+      ].join('\n');
+    };
 
-    const ping = client.ws.ping;
+    try {
+      const reply =
+        await message.reply(status());
 
-    const lastCheck = Math.floor(
-      Date.now() / 1000
-    );
+      const timer = setInterval(
+        async () => {
+          try {
+            await reply.edit(
+              status()
+            );
+          } catch {
+            clearInterval(timer);
+          }
+        },
+        5000
+      );
 
-    return [
-      `🤖 **현재 봇 상태는 ${status} 입니다.**`,
-      '',
-      `📡 핑: **${ping}ms**`,
-      `⏱️ 가동시간: **${formatUptime()}**`,
-      `🔄 마지막 확인: <t:${lastCheck}:T>`,
-    ].join('\n');
-  };
+      setTimeout(
+        () => clearInterval(timer),
+        5 * 60 * 1000
+      );
 
-  try {
-    const sentMessage = await message.reply(
-      makeStatusMessage()
-    );
+    } catch (err) {
+      logger.error(
+        '!봇상태 처리 실패',
+        err
+      );
+    }
+  }
+);
 
-    // 5초마다 실시간 갱신
-    const updateTimer = setInterval(async () => {
-      try {
-        await sentMessage.edit(
-          makeStatusMessage()
-        );
-      } catch (err) {
-        clearInterval(updateTimer);
-      }
-    }, 5000);
+// =====================================
+// Discord 오류
+// =====================================
 
-    // 최대 5분 동안 갱신
-    setTimeout(() => {
-      clearInterval(updateTimer);
-    }, 5 * 60 * 1000);
-
-  } catch (err) {
+client.on(
+  'error',
+  err => {
     logger.error(
-      '!봇상태 응답 실패',
+      'Discord Client 오류',
       err
     );
   }
-});
+);
 
-// ==============================
-// 오류 방지
-// ==============================
+client.on(
+  'warn',
+  info => {
+    logger.warn(info);
+  }
+);
+
+client.on(
+  'shardError',
+  err => {
+    logger.error(
+      'Shard 오류',
+      err
+    );
+  }
+);
 
 process.on(
   'unhandledRejection',
-  (reason) => {
+  reason => {
     logger.error(
       '처리되지 않은 Promise 거부',
       reason
@@ -229,7 +374,7 @@ process.on(
 
 process.on(
   'uncaughtException',
-  (err) => {
+  err => {
     logger.error(
       '처리되지 않은 예외',
       err
@@ -237,22 +382,19 @@ process.on(
   }
 );
 
-client.on(
-  'warn',
-  (info) => {
-    logger.warn(info);
-  }
-);
-
-// ==============================
-// 봇 로그인
-// ==============================
+// =====================================
+// 로그인
+// =====================================
 
 client.login(
   process.env.DISCORD_TOKEN
-).catch((err) => {
+).then(() => {
+  logger.log(
+    '✅ Discord 로그인 요청 완료'
+  );
+}).catch(err => {
   logger.error(
-    '로그인 실패. DISCORD_TOKEN 값을 확인해주세요.',
+    '❌ Discord 로그인 실패',
     err
   );
 
